@@ -89,7 +89,7 @@ anyhow = { version = "1.0" }
 #anndists = { path = "../anndists" }
 #anndists = { version = "0.1.2" }
 # anndists = { git = "https://github.com/jean-pierreBoth/anndists" }
-anndists = { git = "https://github.com/jbk708/anndists.git", branch = "cleanup" }
+anndists = { git = "https://github.com/jbk708/anndists.git", branch = "master" }
 # for benchmark reading, so the lbrary do not depend on hdf5 nor ndarray
 [dev-dependencies]
 # hdf5 = { version = "0.8" }
