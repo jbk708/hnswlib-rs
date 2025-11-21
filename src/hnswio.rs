@@ -494,11 +494,11 @@ impl HnswIo {
         if self.options.use_mmap().0 {
             let datamap_res = DataMap::from_hnswdump::<T>(self.dir.as_path(), &self.basename);
             match datamap_res {
-                Ok(datamap) => {
+                std::result::Result::Ok(datamap) => {
                     info!("reload using mmap");
                     self.datamap = Some(datamap);
                 }
-                Err(_) => {
+                std::result::Result::Err(_) => {
                     error!("load_hnsw could not initialize mmap")
                 }
             }
