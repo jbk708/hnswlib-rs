@@ -66,7 +66,14 @@ impl AnnBenchmarkData {
             // some error
             panic!("error reading distances dataset");
         }
-        let test_distances = res.unwrap();
+        let test_distances_hdf5 = res.unwrap();
+        // Convert from hdf5's ndarray to project's ndarray version
+        let shape = test_distances_hdf5.dim();
+        let data_vec: Vec<f32> = test_distances_hdf5.iter().cloned().collect();
+        let test_distances = Array2::from_shape_vec(
+            (shape.0, shape.1),
+            data_vec,
+        ).unwrap();
         // a check for row order
         debug!(
             "First 2 distances for first test {:?} {:?}  ",
@@ -96,7 +103,14 @@ impl AnnBenchmarkData {
             // some error
             panic!("error reading neighbours dataset");
         }
-        let test_neighbours = res.unwrap();
+        let test_neighbours_hdf5 = res.unwrap();
+        // Convert from hdf5's ndarray to project's ndarray version
+        let shape = test_neighbours_hdf5.dim();
+        let data_vec: Vec<i32> = test_neighbours_hdf5.iter().cloned().collect();
+        let test_neighbours = Array2::from_shape_vec(
+            (shape.0, shape.1),
+            data_vec,
+        ).unwrap();
         debug!(
             "First 2 neighbours  for first test {:?} {:?}  ",
             test_neighbours.get((0, 0)).unwrap(),
