@@ -67,7 +67,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use dist::l2_normalize;
+    use anndists::dist::utils::l2_normalize;
 
     #[test]
     fn test_serial() {

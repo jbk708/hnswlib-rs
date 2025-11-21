@@ -8,8 +8,8 @@ use std::time::{Duration, SystemTime};
 use anndists::dist::*;
 use log::info;
 
-use hnsw_rs::prelude::*;
 use hnsw_rs::hnswio::HnswIo;
+use hnsw_rs::prelude::*;
 
 mod utils;
 use utils::*;
@@ -69,7 +69,7 @@ pub fn main() {
     let out_dir = Path::new("./");
     let base = "sift1m_l2_hnsw";
     let graph_p = out_dir.join(format!("{base}.hnsw.graph"));
-    let data_p  = out_dir.join(format!("{base}.hnsw.data"));
+    let data_p = out_dir.join(format!("{base}.hnsw.data"));
     let have_dump = graph_p.exists() && data_p.exists();
 
     let mut _reload_guard: Option<HnswIo> = None;
@@ -103,7 +103,8 @@ pub fn main() {
             nb_elem, nb_layer, ef_c
         );
 
-        let mut idx = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
+        let mut idx =
+            Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
 
         let extend_flag = false;
         info!("extend flag = {:?} ", extend_flag);

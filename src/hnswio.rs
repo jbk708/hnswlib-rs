@@ -16,7 +16,7 @@
 // and layer (u8) and rank_in_layer:i32.
 // In the data file the point dump consist in the triplet: (MAGICDATAP, origin_id , array of values.)
 //
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
 //
 use std::time::SystemTime;
@@ -493,11 +493,14 @@ impl HnswIo {
         // Do we use mmap at reload
         if self.options.use_mmap().0 {
             let datamap_res = DataMap::from_hnswdump::<T>(self.dir.as_path(), &self.basename);
-            if datamap_res.is_err() {
-                error!("load_hnsw could not initialize mmap")
-            } else {
-                info!("reload using mmap");
-                self.datamap = Some(datamap_res.unwrap());
+            match datamap_res {
+                std::result::Result::Ok(datamap) => {
+                    info!("reload using mmap");
+                    self.datamap = Some(datamap);
+                }
+                std::result::Result::Err(_) => {
+                    error!("load_hnsw could not initialize mmap")
+                }
             }
         }
         // reloader can use datamap
@@ -727,17 +730,17 @@ impl HnswIo {
                     let n_pwo = PointWithOrder::<T>::new(n_point, n.distance);
                     point.neighbours.write()[l].push(Arc::new(n_pwo));
                 } // end of for n
-                //  must sort
+                  //  must sort
                 point.neighbours.write()[l].sort_unstable();
             } // end of for l
             nbp += 1;
-            if nbp % 500_000 == 0 {
+            if nbp.is_multiple_of(500_000) {
                 debug!("reloading nb_points neighbourhood completed : {}", nbp);
             }
         } // end loop in neighbourhood_map
-        //
-        // get id of entry_point
-        // load entry point
+          //
+          // get id of entry_point
+          // load entry point
         info!(
             "end of layer loading, allocating PointIndexation, nb points loaded {:?}",
             nb_points_loaded
@@ -1346,8 +1349,10 @@ impl<T: Serialize + DeserializeOwned + Clone + Send + Sync> HnswIoT for PointInd
 //
 //
 
-impl<T: Serialize + DeserializeOwned + Clone + Sized + Send + Sync, D: Distance<T> + Send + Sync>
-    HnswIoT for Hnsw<'_, T, D>
+impl<
+        T: Serialize + DeserializeOwned + Clone + Sized + Send + Sync,
+        D: Distance<T> + Send + Sync,
+    > HnswIoT for Hnsw<'_, T, D>
 {
     /// The dump method for hnsw.  
     /// - graphout is a BufWriter dedicated to the dump of the graph part of Hnsw
@@ -1390,7 +1395,6 @@ impl<T: Serialize + DeserializeOwned + Clone + Sized + Send + Sync, D: Distance<
 //===============================================================================================================
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
 

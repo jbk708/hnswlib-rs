@@ -96,7 +96,7 @@ anndists = { git = "https://github.com/jbk708/anndists.git", branch = "master" }
 # metno is needed as hdf5 is blocked to hdfsys 1.12
 hdf5 = {package = "hdf5-metno", version = "0.10.0" }
 
-ndarray = { version = "0.16" }
+ndarray = { version = "0.17" }
 skiplist = { version = "0.5" }
 tempfile = { version = "3" }
 
