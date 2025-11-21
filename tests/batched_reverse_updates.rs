@@ -3,7 +3,21 @@
 
 use anndists::dist::*;
 use hnsw_rs::prelude::*;
-use rand::{distr::Uniform, Rng};
+use rand::Rng;
+use std::sync::Arc;
+
+/// Helper function to find a point by origin_id
+fn find_point_by_origin_id<'b, T: Clone + Send + Sync>(
+    point_indexation: &PointIndexation<'b, T>,
+    origin_id: usize,
+) -> Option<Arc<Point<'b, T>>> {
+    for point in point_indexation.into_iter() {
+        if point.get_origin_id() == origin_id {
+            return Some(point);
+        }
+    }
+    None
+}
 
 /// Test that batched reverse updates produce correct neighbor relationships
 #[test]
@@ -35,8 +49,8 @@ fn test_batched_reverse_updates() {
 
     // Check a sample of points to verify correctness
     for i in 0..(nb_elem.min(20)) {
-        if let Some(point) = layer_indexed_points.get_point_by_origin_id(i) {
-            let neighbors = point.get_neighborhood_id();
+        if let Some(point) = find_point_by_origin_id(layer_indexed_points, i) {
+            let neighbors: Vec<Vec<Neighbour>> = point.get_neighborhood_id();
 
             // For each layer
             for (layer, layer_neighbors) in neighbors.iter().enumerate() {
@@ -45,10 +59,8 @@ fn test_batched_reverse_updates() {
                     let neighbor_id = neighbor.d_id;
 
                     // Get the neighbor point
-                    if let Some(neighbor_point) =
-                        layer_indexed_points.get_point_by_origin_id(neighbor_id)
-                    {
-                        let neighbor_neighbors = neighbor_point.get_neighborhood_id();
+                    if let Some(neighbor_point) = find_point_by_origin_id(layer_indexed_points, neighbor_id) {
+                        let neighbor_neighbors: Vec<Vec<Neighbour>> = neighbor_point.get_neighborhood_id();
 
                         // Check if the original point is in the neighbor's neighbor list at this layer
                         let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
@@ -95,17 +107,15 @@ fn test_single_insertion_batched_updates() {
 
     // Check a sample of points
     for i in 0..(nb_elem.min(10)) {
-        if let Some(point) = layer_indexed_points.get_point_by_origin_id(i) {
-            let neighbors = point.get_neighborhood_id();
+        if let Some(point) = find_point_by_origin_id(layer_indexed_points, i) {
+            let neighbors: Vec<Vec<Neighbour>> = point.get_neighborhood_id();
 
             for (layer, layer_neighbors) in neighbors.iter().enumerate() {
                 for neighbor in layer_neighbors {
                     let neighbor_id = neighbor.d_id;
 
-                    if let Some(neighbor_point) =
-                        layer_indexed_points.get_point_by_origin_id(neighbor_id)
-                    {
-                        let neighbor_neighbors = neighbor_point.get_neighborhood_id();
+                    if let Some(neighbor_point) = find_point_by_origin_id(layer_indexed_points, neighbor_id) {
+                        let neighbor_neighbors: Vec<Vec<Neighbour>> = neighbor_point.get_neighborhood_id();
 
                         let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
 
@@ -136,7 +146,7 @@ fn test_batch_update_performance() {
     let mut times = Vec::new();
 
     for &nb_elem in &sizes {
-        let mut hnsw =
+        let hnsw =
             Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
 
         // Generate random data
