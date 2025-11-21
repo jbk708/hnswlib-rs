@@ -143,8 +143,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev pkg-config
-        env:
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+          # Verify pkg-config can find HDF5
+          pkg-config --modversion hdf5 || find /usr -name "hdf5.pc" 2>/dev/null | head -1
+          export PKG_CONFIG_PATH=$(pkg-config --variable pc_path pkg-config 2>/dev/null || echo "/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/pkgconfig:/usr/share/pkgconfig")
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+          pkg-config --exists hdf5 && echo "HDF5 found via pkg-config" || echo "HDF5 not found, will try alternative methods"
       
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -160,5 +163,3 @@ jobs:
       
       - name: Build examples
         run: cargo build --examples --verbose --release
-        env:
-          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
