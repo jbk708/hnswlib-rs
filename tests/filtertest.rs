@@ -129,9 +129,10 @@ fn filter_levenstein() {
     // how many neighbours in res are in filter_vec_res
     let mut nb_found: usize = 0;
     for n in &res {
-        if let Some(found) = filter_vec_res.iter().find(|&&m| m.d_id == n.d_id) {
+        let found = filter_vec_res.iter().find(|&&m| m.d_id == n.d_id);
+        if found.is_some() {
             nb_found += 1;
-            assert_eq!(n.distance, found.distance);
+            assert_eq!(n.distance, found.unwrap().distance);
         }
     }
     println!(" recall : {}", nb_found as f32 / res.len() as f32);
@@ -194,9 +195,10 @@ fn filter_l2() {
     // how many neighbours in res are in filter_vec_res and what is the distance gap
     let mut nb_found: usize = 0;
     for n in &res {
-        if let Some(found) = filter_vec_res.iter().find(|&&m| m.d_id == n.d_id) {
+        let found = filter_vec_res.iter().find(|&&m| m.d_id == n.d_id);
+        if found.is_some() {
             nb_found += 1;
-            assert!((1. - n.distance / found.distance).abs() < 1.0e-5);
+            assert!((1. - n.distance / found.unwrap().distance).abs() < 1.0e-5);
         }
     }
     println!(" recall : {}", nb_found as f32 / res.len() as f32);

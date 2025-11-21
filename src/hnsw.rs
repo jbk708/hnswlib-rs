@@ -12,16 +12,15 @@ use std::cmp::Ordering;
 
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use rayon::prelude::*;
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-use std::sync::mpsc::channel;
 use std::sync::Arc;
+use std::sync::mpsc::channel;
 
 use std::any::type_name;
 
 use hashbrown::HashMap;
-use std::collections::binary_heap::BinaryHeap;
 #[allow(unused)]
 use std::collections::HashSet;
+use std::collections::binary_heap::BinaryHeap;
 
 use log::trace;
 use log::{debug, info, warn};
@@ -514,7 +513,7 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
             trace!("definitive pushing of point {:?}", p_id);
             points_by_layer_ref[p_id.0 as usize].push(Arc::clone(&new_point));
         } // close write lock on points_by_layer
-          //
+        //
         let nb_point;
         {
             let mut lock_nb_point = self.nb_point.write();
@@ -968,9 +967,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         //
         trace!(
             "entering search_layer with entry_point_id {:?} layer : {:?} ef {:?} ",
-            entry_point.p_id,
-            layer,
-            ef
+            entry_point.p_id, layer, ef
         );
         //
         // here we allocate a binary_heap on values not on reference beccause we want to return
@@ -1067,19 +1064,19 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                         );
                         candidate_points
                             .push(Arc::new(PointWithOrder::new(&e.point_ref, -e_dist_to_p)));
-                        if let Some(filter_ref) = filter.as_ref() {
+                        if filter.is_none() {
+                            return_points.push(Arc::clone(&e_prime));
+                        } else {
                             let id: &usize = &e_prime.point_ref.get_origin_id();
-                            if filter_ref.hnsw_filter(id) {
+                            if filter.as_ref().unwrap().hnsw_filter(id) {
                                 if return_points.len() == 1 {
                                     let only_id = return_points.peek().unwrap().point_ref.origin_id;
-                                    if !filter_ref.hnsw_filter(&only_id) {
+                                    if !filter.as_ref().unwrap().hnsw_filter(&only_id) {
                                         return_points.clear()
                                     }
                                 }
                                 return_points.push(Arc::clone(&e_prime))
                             }
-                        } else {
-                            return_points.push(Arc::clone(&e_prime));
                         }
                         if return_points.len() > ef {
                             return_points.pop();
@@ -1088,7 +1085,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 }
             } // end of for on neighbours_c
         } // end of while in candidates
-          //
+        //
         trace!(
             "return from search_layer, nb points : {:?}",
             return_points.len()
@@ -1236,19 +1233,11 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 }
             }
         } // for l
-          //
-          // new_point has been inserted at the beginning in table
-          // so that we can call reverse_update_neighborhoodwe consitently
-          // now reverse update of neighbours.
-        let reverse_update_start = std::time::Instant::now();
+        //
+        // new_point has been inserted at the beginning in table
+        // so that we can call reverse_update_neighborhoodwe consitently
+        // now reverse update of neighbours.
         self.reverse_update_neighborhood_simple(Arc::clone(&new_point));
-        let reverse_update_duration = reverse_update_start.elapsed();
-        if reverse_update_duration.as_millis() > 100 {
-            warn!(
-                "reverse_update_neighborhood_simple took {:?} for point {:?}",
-                reverse_update_duration, new_point.p_id
-            );
-        }
         //
         self.layer_indexed_points.check_entry_point(&new_point);
         //
@@ -1259,53 +1248,12 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     /// It uses Rayon for threading so the number of insertions asked for must be large enough to be efficient.  
     /// Typically 1000 * the number of threads.  
     /// Many consecutive parallel_insert can be done, so the size of vector inserted in one insertion can be optimized.
-    /// The first point is inserted sequentially to establish the entry point before parallel insertion begins.
     pub fn parallel_insert(&self, datas: &[(&Vec<T>, usize)]) {
-        debug!("entering parallel_insert with {} points", datas.len());
-        let start = std::time::Instant::now();
-
-        // Insert first point sequentially to establish entry point and avoid race conditions
-        if !datas.is_empty() {
-            let first_point_start = std::time::Instant::now();
-            self.insert((datas[0].0.as_slice(), datas[0].1));
-            let first_point_duration = first_point_start.elapsed();
-            debug!(
-                "First point inserted sequentially in {:?}, entry point established",
-                first_point_duration
-            );
-
-            // Insert remaining points in parallel
-            if datas.len() > 1 {
-                let parallel_start = std::time::Instant::now();
-                let completed = Arc::new(AtomicUsize::new(0));
-                let completed_clone = Arc::clone(&completed);
-                datas[1..].par_iter().for_each(|&(item, v)| {
-                    self.insert((item.as_slice(), v));
-                    let count = completed_clone.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-                    if count.is_multiple_of(100) {
-                        info!(
-                            "Inserted {} / {} points (elapsed: {:?})",
-                            count + 1,
-                            datas.len(),
-                            parallel_start.elapsed()
-                        );
-                    }
-                });
-                let parallel_duration = parallel_start.elapsed();
-                info!(
-                    "Completed parallel insertion of {} points in {:?}",
-                    datas.len() - 1,
-                    parallel_duration
-                );
-            }
-        }
-
-        let elapsed = start.elapsed();
-        debug!(
-            "exiting parallel_insert, completed in {:?} ({:.2}s)",
-            elapsed,
-            elapsed.as_secs_f64()
-        );
+        debug!("entering parallel_insert");
+        datas
+            .par_iter()
+            .for_each(|&(item, v)| self.insert((item.as_slice(), v)));
+        debug!("exiting parallel_insert");
     } // end of parallel_insert
 
     /// Insert in parallel slices of \[T\] each associated to its id.    
@@ -1317,8 +1265,6 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     } // end of parallel_insert
 
     /// insert new_point in neighbourhood info of point
-    /// IMPORTANT: To prevent deadlocks, we must acquire locks in a consistent order.
-    /// We sort neighbors by PointId before acquiring their locks.
     fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<T>>) {
         //  println!("reverse update neighbourhood for  new point {:?} ", new_point.p_id);
         trace!(
@@ -1327,71 +1273,43 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         );
         let level = new_point.p_id.0;
         for l in (0..level + 1).rev() {
-            let neighbours_read_start = std::time::Instant::now();
-            let neighbours = new_point.neighbours.read();
-            let neighbours_read_duration = neighbours_read_start.elapsed();
-            if neighbours_read_duration.as_millis() > 50 {
-                warn!(
-                    "Reading neighbours for point {:?} layer {} took {:?}",
-                    new_point.p_id, l, neighbours_read_duration
-                );
-            }
-
-            // Collect neighbors and sort by PointId to ensure consistent lock ordering
-            // This prevents deadlocks when multiple threads update neighborhoods simultaneously
-            let mut neighbors_to_update: Vec<_> = neighbours[l as usize]
-                .iter()
-                .filter(|q| new_point.p_id != q.point_ref.p_id)
-                .map(|q| (q.point_ref.p_id, Arc::clone(&q.point_ref), q.dist_to_ref))
-                .collect();
-            neighbors_to_update.sort_by_key(|(p_id, _, _)| *p_id);
-
-            drop(neighbours); // Release read lock before acquiring write locks
-
-            for (_, q_point, dist_to_ref) in neighbors_to_update {
-                // as new point is in global table, do not loop and deadlock!!
-                let write_lock_start = std::time::Instant::now();
-                let mut q_point_neighbours = q_point.neighbours.write();
-                let write_lock_duration = write_lock_start.elapsed();
-                if write_lock_duration.as_millis() > 50 {
-                    warn!(
-                        "Acquiring write lock on neighbours for point {:?} took {:?} (updating from point {:?})",
-                        q_point.p_id,
-                        write_lock_duration,
-                        new_point.p_id
-                    );
-                }
-                let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), dist_to_ref);
-                // must be sure that we add a point at the correct level. See the comment to search_layer!
-                // this ensures that reverse updating do not add problems.
-                let l_n = n_to_add.point_ref.p_id.0 as usize;
-                let already = q_point_neighbours[l_n]
-                    .iter()
-                    .position(|old| old.point_ref.p_id == new_point.p_id);
-                if already.is_some() {
-                    // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
-                    // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
-                    //   new_point.debug_dump();
-                    //   panic!();
-                    continue;
-                }
-                q_point_neighbours[l_n].push(Arc::new(n_to_add));
-                let nbn_at_l = q_point_neighbours[l_n].len();
-                //
-                // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
-                let threshold_shrinking = if l_n > 0 {
-                    self.max_nb_connection
-                } else {
-                    2 * self.max_nb_connection
-                };
-                let shrink = nbn_at_l > threshold_shrinking;
-                {
-                    // sort and shring if necessary
-                    q_point_neighbours[l_n].sort_unstable();
-                    if shrink {
-                        q_point_neighbours[l_n].pop();
+            for q in &new_point.neighbours.read()[l as usize] {
+                if new_point.p_id != q.point_ref.p_id {
+                    // as new point is in global table, do not loop and deadlock!!
+                    let q_point = &q.point_ref;
+                    let mut q_point_neighbours = q_point.neighbours.write();
+                    let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), q.dist_to_ref);
+                    // must be sure that we add a point at the correct level. See the comment to search_layer!
+                    // this ensures that reverse updating do not add problems.
+                    let l_n = n_to_add.point_ref.p_id.0 as usize;
+                    let already = q_point_neighbours[l_n]
+                        .iter()
+                        .position(|old| old.point_ref.p_id == new_point.p_id);
+                    if already.is_some() {
+                        // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
+                        // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
+                        //   new_point.debug_dump();
+                        //   panic!();
+                        continue;
                     }
-                }
+                    q_point_neighbours[l_n].push(Arc::new(n_to_add));
+                    let nbn_at_l = q_point_neighbours[l_n].len();
+                    //
+                    // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
+                    let threshold_shrinking = if l_n > 0 {
+                        self.max_nb_connection
+                    } else {
+                        2 * self.max_nb_connection
+                    };
+                    let shrink = nbn_at_l > threshold_shrinking;
+                    {
+                        // sort and shring if necessary
+                        q_point_neighbours[l_n].sort_unstable();
+                        if shrink {
+                            q_point_neighbours[l_n].pop();
+                        }
+                    }
+                } // end protection against point identity
             }
         }
         //   println!("     exitingreverse update neighbourhood for  new point {:?} ", new_point.p_id);
@@ -1469,7 +1387,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 candidates.push(Arc::new(PointWithOrder::new(p_point, -dist_topoint)));
             }
         } // end if extend_candidates
-          //
+        //
         let mut discarded_points = BinaryHeap::<Arc<PointWithOrder<T>>>::new();
         while !candidates.is_empty() && neighbours_vec.len() < nb_neighbours_asked {
             // compare distances of e to data. we do not need to recompute dists!
@@ -1636,7 +1554,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 pivot = Arc::clone(new_pivot.as_ref().unwrap());
             }
         } // end on for on layers
-          // ef must be greater than knbn. Possibly it should be between knbn and self.max_nb_connection
+        // ef must be greater than knbn. Possibly it should be between knbn and self.max_nb_connection
         let ef = ef_arg.max(knbn);
         log::debug!("pivot changed , current pivot {:?}", pivot.get_point_id());
         // search lowest non empty layer (in case of search with incomplete lower layer at beginning of hnsw filling)
@@ -1842,6 +1760,7 @@ where
 } // end of check_reload
 
 #[cfg(test)]
+
 mod tests {
 
     use super::*;

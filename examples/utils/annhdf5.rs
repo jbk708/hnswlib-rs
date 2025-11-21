@@ -5,7 +5,6 @@
 use ndarray::Array2;
 
 use ::hdf5::*;
-use anndists::dist::utils::l2_normalize;
 use log::debug;
 
 // datasets
@@ -66,11 +65,7 @@ impl AnnBenchmarkData {
             // some error
             panic!("error reading distances dataset");
         }
-        let test_distances_hdf5 = res.unwrap();
-        // Convert from hdf5's ndarray to project's ndarray version
-        let shape = test_distances_hdf5.dim();
-        let data_vec: Vec<f32> = test_distances_hdf5.iter().cloned().collect();
-        let test_distances = Array2::from_shape_vec((shape.0, shape.1), data_vec).unwrap();
+        let test_distances = res.unwrap();
         // a check for row order
         debug!(
             "First 2 distances for first test {:?} {:?}  ",
@@ -100,11 +95,7 @@ impl AnnBenchmarkData {
             // some error
             panic!("error reading neighbours dataset");
         }
-        let test_neighbours_hdf5 = res.unwrap();
-        // Convert from hdf5's ndarray to project's ndarray version
-        let shape = test_neighbours_hdf5.dim();
-        let data_vec: Vec<i32> = test_neighbours_hdf5.iter().cloned().collect();
-        let test_neighbours = Array2::from_shape_vec((shape.0, shape.1), data_vec).unwrap();
+        let test_neighbours = res.unwrap();
         debug!(
             "First 2 neighbours  for first test {:?} {:?}  ",
             test_neighbours.get((0, 0)).unwrap(),
@@ -214,10 +205,10 @@ impl AnnBenchmarkData {
     #[allow(unused)]
     pub fn do_l2_normalization(&mut self) {
         for i in 0..self.test_data.len() {
-            l2_normalize(&mut self.test_data[i]);
+            anndists::dist::l2_normalize(&mut self.test_data[i]);
         }
         for i in 0..self.train_data.len() {
-            l2_normalize(&mut self.train_data[i].0);
+            anndists::dist::l2_normalize(&mut self.train_data[i].0);
         }
     } // end of do_l2_normalization
 } // end of impl block
