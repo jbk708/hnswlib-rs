@@ -11,12 +11,9 @@ fn find_point_by_origin_id<'b, T: Clone + Send + Sync>(
     point_indexation: &PointIndexation<'b, T>,
     origin_id: usize,
 ) -> Option<Arc<Point<'b, T>>> {
-    for point in point_indexation.into_iter() {
-        if point.get_origin_id() == origin_id {
-            return Some(point);
-        }
-    }
-    None
+    point_indexation
+        .into_iter()
+        .find(|point| point.get_origin_id() == origin_id)
 }
 
 /// Test that batched reverse updates produce correct neighbor relationships
@@ -28,7 +25,7 @@ fn test_batched_reverse_updates() {
     let ef_c = 200;
 
     // Create HNSW instance
-    let mut hnsw = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
+    let hnsw = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
 
     // Generate random data points
     let mut rng = rand::rng();
@@ -90,7 +87,7 @@ fn test_single_insertion_batched_updates() {
     let ef_c = 200;
 
     // Create HNSW instance
-    let mut hnsw = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
+    let hnsw = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
 
     // Generate random data points
     let mut rng = rand::rng();
