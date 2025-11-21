@@ -91,6 +91,20 @@ impl PointIdWithOrder {
     }
 } // end of impl block
 
+/// Represents a pending reverse neighbor update
+#[derive(Debug, Clone)]
+pub(crate) struct ReverseUpdate<'b, T: Clone + Send + Sync> {
+    /// Target point whose neighbors need updating
+    target_point: Arc<Point<'b, T>>,
+    /// New point to add to target's neighbors
+    new_point: Arc<Point<'b, T>>,
+    /// Distance from new_point to target_point
+    distance: f32,
+    /// Layer at which this connection exists
+    #[allow(dead_code)]
+    layer: u8,
+}
+
 //=======================================================================================
 /// The struct giving an answer point to a search request.
 /// This structure is exported to other language API.
@@ -802,6 +816,9 @@ pub struct Hnsw<'b, T: Clone + Send + Sync + 'b, D: Distance<T>> {
     pub(crate) searching: bool,
     /// set to true if some data come from a mmap
     pub(crate) datamap_opt: bool,
+    /// Queue for batched reverse neighbor updates
+    /// Maps target point ID to list of updates for that point
+    pub(crate) reverse_update_queue: Arc<Mutex<HashMap<PointId, Vec<ReverseUpdate<'b, T>>>>>,
 } // end of Hnsw
 
 impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
@@ -845,6 +862,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             dist_f: f,
             searching: false,
             datamap_opt: false,
+            reverse_update_queue: Arc::new(Mutex::new(HashMap::new())),
         }
     } // end of new
 
@@ -1250,10 +1268,170 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             );
         }
         //
+        // For single insertions, process batches immediately
+        // This ensures graph consistency but may be slower
+        // TODO: Consider batching multiple single insertions
+        self.process_batched_reverse_updates();
+        //
         self.layer_indexed_points.check_entry_point(&new_point);
         //
         trace!("Hnsw exiting insert new point {:?} ", new_point.p_id);
     } // end of insert
+
+    /// Internal insertion function that queues reverse updates but doesn't process them
+    /// Used by parallel_insert to defer batch processing until all insertions complete
+    fn insert_slice_internal(&self, data_with_id: (&[T], usize)) {
+        //
+        let (data, origin_id) = data_with_id;
+        let keep_pruned = self.keep_pruned;
+        // insert in indexation and get point_id adn generate a new entry_point if necessary
+        let (new_point, point_rank) = self
+            .layer_indexed_points
+            .generate_new_point(data, origin_id);
+        trace!("Hnsw insert generated new point {:?} ", new_point.p_id);
+        // now real work begins
+        // allocate a binary heap
+        let level = new_point.p_id.0;
+        let mut enter_point_copy = None;
+        let mut max_level_observed = 0;
+        // entry point has been set in
+        {
+            // I open a read lock on an option
+            if let Some(arc_point) = self.layer_indexed_points.entry_point.read().as_ref() {
+                enter_point_copy = Some(Arc::clone(arc_point));
+                if point_rank == 1 {
+                    debug!(
+                        "Hnsw  stored first point , direct return  {:?} ",
+                        new_point.p_id
+                    );
+                    return;
+                }
+                max_level_observed = enter_point_copy.as_ref().unwrap().p_id.0;
+            }
+        }
+        if enter_point_copy.is_none() {
+            self.layer_indexed_points.check_entry_point(&new_point);
+            return;
+        }
+        let mut dist_to_entry = self
+            .dist_f
+            .eval(data, enter_point_copy.as_ref().unwrap().data.get_v());
+        // we go from self.max_level_observed to level+1 included
+        for l in ((level + 1)..(max_level_observed + 1)).rev() {
+            // CAVEAT could bypass when layer empty, avoid  allocation..
+            let mut sorted_points = self.search_layer(
+                data,
+                Arc::clone(enter_point_copy.as_ref().unwrap()),
+                1,
+                l,
+                None,
+            );
+            trace!(
+                "in insert :search_layer layer {:?}, returned {:?} points ",
+                l,
+                sorted_points.len()
+            );
+            if sorted_points.len() > 1 {
+                panic!(
+                    "in insert : search_layer layer {:?}, returned {:?} points ",
+                    l,
+                    sorted_points.len()
+                );
+            }
+            // the heap conversion is useless beccause of the preceding test.
+            // sorted_points = from_positive_binaryheap_to_negative_binary_heap(&mut sorted_points);
+            //
+            if let Some(ep) = sorted_points.pop() {
+                // useful for projecting lower layer to upper layer. keep track of points encountered.
+                if new_point.neighbours.read()[l as usize].len()
+                    < self.get_max_nb_connection() as usize
+                {
+                    new_point.neighbours.write()[l as usize].push(Arc::clone(&ep));
+                }
+                // get the lowest distance point
+                let tmp_dist = self.dist_f.eval(data, ep.point_ref.data.get_v());
+                if tmp_dist < dist_to_entry {
+                    enter_point_copy = Some(Arc::clone(&ep.point_ref));
+                    dist_to_entry = tmp_dist;
+                }
+            } else {
+                // this layer is not yet filled
+                trace!("layer still empty  {} : got null list", l);
+            }
+        }
+        // now enter_point_id_copy contains id of nearest
+        // now loop down to 0
+        for l in (0..level + 1).rev() {
+            let ef = self.ef_construction;
+            // when l == level, we cannot get new_point in sorted_points as it is seen only from declared neighbours
+            let mut sorted_points = self.search_layer(
+                data,
+                Arc::clone(enter_point_copy.as_ref().unwrap()),
+                ef,
+                l,
+                None,
+            );
+            trace!(
+                "in insert :search_layer layer {:?}, returned {:?} points ",
+                l,
+                sorted_points.len()
+            );
+            sorted_points = from_positive_binaryheap_to_negative_binary_heap(&mut sorted_points);
+            if !sorted_points.is_empty() {
+                let nb_conn;
+                let extend_c;
+                if l == 0 {
+                    nb_conn = 2 * self.max_nb_connection;
+                    extend_c = self.extend_candidates;
+                } else {
+                    nb_conn = self.max_nb_connection;
+                    extend_c = false;
+                }
+                let mut neighbours = Vec::<Arc<PointWithOrder<T>>>::with_capacity(nb_conn);
+                self.select_neighbours(
+                    data,
+                    &mut sorted_points,
+                    nb_conn,
+                    extend_c,
+                    l,
+                    keep_pruned,
+                    &mut neighbours,
+                );
+                // sort neighbours
+                neighbours.sort_unstable();
+                // we must add bidirecti*onal from data i.e new_point_id to neighbours
+                new_point.neighbours.write()[l as usize].clone_from(&neighbours);
+                // this reverse neighbour update could be done here but we put it at end to gather all code
+                // requiring a mutex guard for multi threading.
+                // update ep for loop iteration. As we sorted neighbours the nearest
+                if !neighbours.is_empty() {
+                    enter_point_copy = Some(Arc::clone(&neighbours[0].point_ref));
+                }
+            }
+        } // for l
+          //
+          // new_point has been inserted at the beginning in table
+          // so that we can call reverse_update_neighborhoodwe consitently
+          // now reverse update of neighbours.
+        let reverse_update_start = std::time::Instant::now();
+        self.reverse_update_neighborhood_simple(Arc::clone(&new_point));
+        let reverse_update_duration = reverse_update_start.elapsed();
+        if reverse_update_duration.as_millis() > 100 {
+            warn!(
+                "reverse_update_neighborhood_simple took {:?} for point {:?}",
+                reverse_update_duration, new_point.p_id
+            );
+        }
+        //
+        // NOTE: We do NOT process batches here - that's done at the end of parallel_insert
+        //
+        self.layer_indexed_points.check_entry_point(&new_point);
+        //
+        trace!(
+            "Hnsw exiting insert_slice_internal new point {:?} ",
+            new_point.p_id
+        );
+    } // end of insert_slice_internal
 
     /// Insert in parallel a slice of Vec\<T\> each associated to its id.    
     /// It uses Rayon for threading so the number of insertions asked for must be large enough to be efficient.  
@@ -1275,12 +1453,13 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             );
 
             // Insert remaining points in parallel
+            // Use insert_slice_internal to defer batch processing until the end
             if datas.len() > 1 {
                 let parallel_start = std::time::Instant::now();
                 let completed = Arc::new(AtomicUsize::new(0));
                 let completed_clone = Arc::clone(&completed);
                 datas[1..].par_iter().for_each(|&(item, v)| {
-                    self.insert((item.as_slice(), v));
+                    self.insert_slice_internal((item.as_slice(), v));
                     let count = completed_clone.fetch_add(1, AtomicOrdering::Relaxed) + 1;
                     if count.is_multiple_of(100) {
                         info!(
@@ -1300,6 +1479,9 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             }
         }
 
+        // Process all batched reverse updates
+        self.process_batched_reverse_updates();
+
         let elapsed = start.elapsed();
         debug!(
             "exiting parallel_insert, completed in {:?} ({:.2}s)",
@@ -1316,86 +1498,157 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         datas.par_iter().for_each(|&item| self.insert_slice(item));
     } // end of parallel_insert
 
-    /// insert new_point in neighbourhood info of point
-    /// IMPORTANT: To prevent deadlocks, we must acquire locks in a consistent order.
-    /// We sort neighbors by PointId before acquiring their locks.
-    fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<T>>) {
-        //  println!("reverse update neighbourhood for  new point {:?} ", new_point.p_id);
+    /// Queue reverse neighbor updates instead of applying them immediately
+    /// This eliminates lock contention during parallel insertion by batching updates
+    fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<'b, T>>) {
         trace!(
-            "reverse update neighbourhood for  new point {:?} ",
+            "queueing reverse update neighbourhood for new point {:?}",
             new_point.p_id
         );
         let level = new_point.p_id.0;
+
+        // Collect all neighbors that need reverse updates
         for l in (0..level + 1).rev() {
-            let neighbours_read_start = std::time::Instant::now();
             let neighbours = new_point.neighbours.read();
-            let neighbours_read_duration = neighbours_read_start.elapsed();
-            if neighbours_read_duration.as_millis() > 50 {
-                warn!(
-                    "Reading neighbours for point {:?} layer {} took {:?}",
-                    new_point.p_id, l, neighbours_read_duration
-                );
-            }
 
-            // Collect neighbors and sort by PointId to ensure consistent lock ordering
-            // This prevents deadlocks when multiple threads update neighborhoods simultaneously
-            let mut neighbors_to_update: Vec<_> = neighbours[l as usize]
-                .iter()
-                .filter(|q| new_point.p_id != q.point_ref.p_id)
-                .map(|q| (q.point_ref.p_id, Arc::clone(&q.point_ref), q.dist_to_ref))
-                .collect();
-            neighbors_to_update.sort_by_key(|(p_id, _, _)| *p_id);
-
-            drop(neighbours); // Release read lock before acquiring write locks
-
-            for (_, q_point, dist_to_ref) in neighbors_to_update {
-                // as new point is in global table, do not loop and deadlock!!
-                let write_lock_start = std::time::Instant::now();
-                let mut q_point_neighbours = q_point.neighbours.write();
-                let write_lock_duration = write_lock_start.elapsed();
-                if write_lock_duration.as_millis() > 50 {
-                    warn!(
-                        "Acquiring write lock on neighbours for point {:?} took {:?} (updating from point {:?})",
-                        q_point.p_id,
-                        write_lock_duration,
-                        new_point.p_id
-                    );
+            for q in &neighbours[l as usize] {
+                if new_point.p_id == q.point_ref.p_id {
+                    continue; // Skip self-references
                 }
-                let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), dist_to_ref);
-                // must be sure that we add a point at the correct level. See the comment to search_layer!
-                // this ensures that reverse updating do not add problems.
+
+                // Queue the update instead of applying immediately
+                let update = ReverseUpdate {
+                    target_point: Arc::clone(&q.point_ref),
+                    new_point: Arc::clone(&new_point),
+                    distance: q.dist_to_ref,
+                    layer: l,
+                };
+
+                let mut queue = self.reverse_update_queue.lock();
+                queue
+                    .entry(q.point_ref.p_id)
+                    .or_insert_with(Vec::new)
+                    .push(update);
+            }
+        }
+    } // end of reverse_update_neighborhood_simple
+
+    /// Process all queued reverse neighbor updates in batches
+    /// Groups updates by target point and processes them efficiently
+    fn process_batched_reverse_updates(&self) {
+        debug!("Processing batched reverse updates");
+        let start = std::time::Instant::now();
+
+        // Extract all updates from queue
+        let mut update_map: HashMap<PointId, Vec<ReverseUpdate<'b, T>>> = {
+            let mut queue = self.reverse_update_queue.lock();
+            std::mem::take(&mut *queue)
+        };
+
+        if update_map.is_empty() {
+            debug!("No reverse updates to process");
+            return;
+        }
+
+        debug!(
+            "Processing {} target points with reverse updates",
+            update_map.len()
+        );
+
+        // Process updates for each target point
+        // Sort by PointId to ensure consistent lock ordering (prevent deadlocks)
+        let mut sorted_targets: Vec<_> = update_map.keys().cloned().collect();
+        sorted_targets.sort();
+
+        for target_id in sorted_targets {
+            let updates = update_map.remove(&target_id).unwrap();
+
+            // Acquire lock once for this target point
+            // Get target_point before consuming updates
+            let target_point = Arc::clone(&updates[0].target_point);
+            let mut target_neighbours = target_point.neighbours.write();
+
+            // Apply all updates for this target point
+            // Process each update individually to match original behavior
+            for update in updates {
+                let n_to_add =
+                    PointWithOrder::<T>::new(&Arc::clone(&update.new_point), update.distance);
                 let l_n = n_to_add.point_ref.p_id.0 as usize;
-                let already = q_point_neighbours[l_n]
-                    .iter()
-                    .position(|old| old.point_ref.p_id == new_point.p_id);
-                if already.is_some() {
-                    // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
-                    // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
-                    //   new_point.debug_dump();
-                    //   panic!();
+
+                debug!(
+                    "Processing reverse update: adding point {:?} (layer {}) to target {:?} at layer {}",
+                    update.new_point.p_id,
+                    l_n,
+                    target_id,
+                    l_n
+                );
+
+                // Ensure we don't exceed the layer bounds
+                if l_n >= target_neighbours.len() {
+                    warn!(
+                        "Skipping reverse update: target point layer {} exceeds neighbor list size {}",
+                        l_n,
+                        target_neighbours.len()
+                    );
                     continue;
                 }
-                q_point_neighbours[l_n].push(Arc::new(n_to_add));
-                let nbn_at_l = q_point_neighbours[l_n].len();
-                //
-                // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
+
+                // Check if already present
+                let already = target_neighbours[l_n]
+                    .iter()
+                    .position(|old| old.point_ref.p_id == update.new_point.p_id);
+
+                if already.is_some() {
+                    debug!(
+                        "Skipping duplicate reverse update: point {:?} already in target {:?} at layer {}",
+                        update.new_point.p_id,
+                        target_id,
+                        l_n
+                    );
+                    continue;
+                }
+
+                // Add neighbor
+                target_neighbours[l_n].push(Arc::new(n_to_add));
+                let nbn_at_l = target_neighbours[l_n].len();
+
+                debug!(
+                    "Added reverse neighbor: point {:?} to target {:?} at layer {}, now {} neighbors",
+                    update.new_point.p_id,
+                    target_id,
+                    l_n,
+                    nbn_at_l
+                );
+
+                // Apply shrinking if necessary
                 let threshold_shrinking = if l_n > 0 {
                     self.max_nb_connection
                 } else {
                     2 * self.max_nb_connection
                 };
-                let shrink = nbn_at_l > threshold_shrinking;
-                {
-                    // sort and shring if necessary
-                    q_point_neighbours[l_n].sort_unstable();
-                    if shrink {
-                        q_point_neighbours[l_n].pop();
-                    }
+
+                if nbn_at_l > threshold_shrinking {
+                    target_neighbours[l_n].sort_unstable();
+                    let removed = target_neighbours[l_n].pop();
+                    warn!(
+                        "Shrunk neighbor list at layer {} for target {:?}, removed point {:?} (was adding {:?})",
+                        l_n,
+                        target_id,
+                        removed.map(|p| p.point_ref.p_id),
+                        update.new_point.p_id
+                    );
+                } else {
+                    target_neighbours[l_n].sort_unstable();
                 }
             }
         }
-        //   println!("     exitingreverse update neighbourhood for  new point {:?} ", new_point.p_id);
-    } // end of reverse_update_neighborhood_simple
+
+        let elapsed = start.elapsed();
+        debug!(
+            "Completed processing batched reverse updates in {:?}",
+            elapsed
+        );
+    } // end of process_batched_reverse_updates
 
     pub fn get_point_indexation(&self) -> &PointIndexation<'b, T> {
         &self.layer_indexed_points
