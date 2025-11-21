@@ -493,11 +493,14 @@ impl HnswIo {
         // Do we use mmap at reload
         if self.options.use_mmap().0 {
             let datamap_res = DataMap::from_hnswdump::<T>(self.dir.as_path(), &self.basename);
-            if let Ok(datamap) = datamap_res {
-                info!("reload using mmap");
-                self.datamap = Some(datamap);
-            } else {
-                error!("load_hnsw could not initialize mmap")
+            match datamap_res {
+                Ok(datamap) => {
+                    info!("reload using mmap");
+                    self.datamap = Some(datamap);
+                }
+                Err(_) => {
+                    error!("load_hnsw could not initialize mmap")
+                }
             }
         }
         // reloader can use datamap
