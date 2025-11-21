@@ -1412,26 +1412,40 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             let target_point = Arc::clone(&updates[0].target_point);
             let mut target_neighbours = target_point.neighbours.write();
 
-            // Apply all updates for this target point
+            // Group updates by layer to optimize processing
+            let mut updates_by_layer: hashbrown::HashMap<usize, Vec<ReverseUpdate<'b, T>>> =
+                hashbrown::HashMap::new();
             for update in updates {
-                let n_to_add =
-                    PointWithOrder::<T>::new(&Arc::clone(&update.new_point), update.distance);
-                let l_n = n_to_add.point_ref.p_id.0 as usize;
+                let l_n = update.new_point.p_id.0 as usize;
+                updates_by_layer
+                    .entry(l_n)
+                    .or_insert_with(Vec::new)
+                    .push(update);
+            }
 
-                // Check if already present
-                let already = target_neighbours[l_n]
-                    .iter()
-                    .position(|old| old.point_ref.p_id == update.new_point.p_id);
+            // Process updates layer by layer
+            for (l_n, layer_updates) in updates_by_layer {
+                // Add all neighbors for this layer first
+                for update in layer_updates {
+                    // Check if already present
+                    let already = target_neighbours[l_n]
+                        .iter()
+                        .position(|old| old.point_ref.p_id == update.new_point.p_id);
 
-                if already.is_some() {
-                    continue;
+                    if already.is_some() {
+                        continue;
+                    }
+
+                    // Add neighbor
+                    let n_to_add = PointWithOrder::<T>::new(
+                        &Arc::clone(&update.new_point),
+                        update.distance,
+                    );
+                    target_neighbours[l_n].push(Arc::new(n_to_add));
                 }
 
-                // Add neighbor
-                target_neighbours[l_n].push(Arc::new(n_to_add));
+                // Sort and shrink once per layer after adding all neighbors
                 let nbn_at_l = target_neighbours[l_n].len();
-
-                // Apply shrinking if necessary
                 let threshold_shrinking = if l_n > 0 {
                     self.max_nb_connection
                 } else {
