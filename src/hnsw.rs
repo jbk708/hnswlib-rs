@@ -1716,7 +1716,6 @@ where
 } // end of check_reload
 
 #[cfg(test)]
-
 mod tests {
 
     use super::*;
