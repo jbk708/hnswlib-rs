@@ -25,6 +25,11 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt, clippy
       
+      - name: Install HDF5 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev pkg-config
+      
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -47,11 +52,8 @@ jobs:
         run: cargo build --verbose
       
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose --lib --tests
         continue-on-error: ${{ matrix.rust == 'nightly' }}
-        env:
-          # Skip HDF5-dependent tests if HDF5 is not available
-          SKIP_HDF5_TESTS: 1
       
       - name: Build release
         run: cargo build --release --verbose
