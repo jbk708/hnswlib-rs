@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use std::collections::binary_heap::BinaryHeap;
 
 use log::trace;
-use log::{debug, info, warn};
+use log::{debug, info};
 
 pub use crate::filter::FilterT;
 use anndists::dist::distances::Distance;
@@ -530,23 +530,8 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
 
     /// check if entry_point is modified
     fn check_entry_point(&self, new_point: &Arc<Point<'b, T>>) {
-        let start = std::time::Instant::now();
         // Serialize entry point initialization to prevent race conditions
         let _guard = self.entry_point_init.lock();
-        let init_lock_duration = start.elapsed();
-
-        // Warn if mutex acquisition took too long
-        if init_lock_duration.as_secs() > 1 {
-            warn!(
-                "Acquiring entry_point_init mutex took {:?} (this may indicate contention)",
-                init_lock_duration
-            );
-        } else if init_lock_duration.as_millis() > 100 {
-            debug!(
-                "Entry point init mutex acquisition took {:?}",
-                init_lock_duration
-            );
-        }
 
         // Double-check pattern: check if entry point already exists
         {
@@ -561,23 +546,8 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
         }
 
         // Acquire write lock to update entry point
-        let write_lock_start = std::time::Instant::now();
         trace!("trying to get a lock on entry point");
         let mut entry_point_ref = self.entry_point.write();
-        let write_lock_duration = write_lock_start.elapsed();
-
-        // Warn if write lock acquisition took too long
-        if write_lock_duration.as_secs() > 1 {
-            warn!(
-                "Acquiring entry_point write lock took {:?} (this may indicate contention)",
-                write_lock_duration
-            );
-        } else if write_lock_duration.as_millis() > 100 {
-            debug!(
-                "Entry point write lock acquisition took {:?}",
-                write_lock_duration
-            );
-        }
         match entry_point_ref.as_ref() {
             Some(arc_point) => {
                 if new_point.p_id.0 > arc_point.p_id.0 {
