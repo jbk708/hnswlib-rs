@@ -62,14 +62,18 @@ fn test_batched_reverse_updates() {
                         let neighbor_neighbors: Vec<Vec<Neighbour>> =
                             neighbor_point.get_neighborhood_id();
 
-                        // Check if the original point is in the neighbor's neighbor list at this layer
-                        let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
+                        // When point A has neighbor B at layer L, point B should have point A
+                        // in its neighbor list at layer L_A (where L_A is point A's layer)
+                        // So we check the layer of the original point (i), not the layer where
+                        // the connection exists
+                        let point_layer = point.get_point_id().0 as usize;
+                        let found = neighbor_neighbors[point_layer].iter().any(|n| n.d_id == i);
 
                         // The relationship should be bidirectional
                         assert!(
                             found,
-                            "Point {} has neighbor {} at layer {}, but {} doesn't have {} as neighbor",
-                            i, neighbor_id, layer, neighbor_id, i
+                            "Point {} (layer {}) has neighbor {} at layer {}, but {} doesn't have {} as neighbor at layer {}",
+                            i, point_layer, neighbor_id, layer, neighbor_id, i, point_layer
                         );
                     }
                 }
@@ -110,6 +114,7 @@ fn test_single_insertion_batched_updates() {
         if let Some(point) = find_point_by_origin_id(layer_indexed_points, i) {
             let neighbors: Vec<Vec<Neighbour>> = point.get_neighborhood_id();
 
+            let point_layer = point.get_point_id().0 as usize;
             for (layer, layer_neighbors) in neighbors.iter().enumerate() {
                 for neighbor in layer_neighbors {
                     let neighbor_id = neighbor.d_id;
@@ -120,12 +125,13 @@ fn test_single_insertion_batched_updates() {
                         let neighbor_neighbors: Vec<Vec<Neighbour>> =
                             neighbor_point.get_neighborhood_id();
 
-                        let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
+                        // Check at the layer of the original point, not the connection layer
+                        let found = neighbor_neighbors[point_layer].iter().any(|n| n.d_id == i);
 
                         assert!(
                             found,
-                            "Point {} has neighbor {} at layer {}, but {} doesn't have {} as neighbor",
-                            i, neighbor_id, layer, neighbor_id, i
+                            "Point {} (layer {}) has neighbor {} at layer {}, but {} doesn't have {} as neighbor at layer {}",
+                            i, point_layer, neighbor_id, layer, neighbor_id, i, point_layer
                         );
                     }
                 }
