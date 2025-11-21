@@ -29,6 +29,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libhdf5-dev pkg-config
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
       
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -47,16 +49,24 @@ jobs:
       
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
       
       - name: Build
         run: cargo build --verbose
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
       
       - name: Run tests
         run: cargo test --verbose --lib --tests
         continue-on-error: ${{ matrix.rust == 'nightly' }}
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
       
       - name: Build release
         run: cargo build --release --verbose
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
 
   test-entry-point-race:
     name: Test Entry Point Race (Critical Tests)
@@ -69,6 +79,13 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
+      
+      - name: Install HDF5 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev pkg-config
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
       
       - name: Cache cargo registry
         uses: actions/cache@v4
@@ -85,6 +102,8 @@ jobs:
       - name: Run entry point race tests
         run: cargo test --test entry_point_race --verbose -- --nocapture
         timeout-minutes: 10
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
 
   lint:
     name: Lint
@@ -98,11 +117,20 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       
+      - name: Install HDF5 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev pkg-config
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
+      
       - name: Check formatting
         run: cargo fmt --all -- --check
       
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
+        env:
+          PKG_CONFIG_PATH: /usr/lib/x86_64-linux-gnu/pkgconfig
 
   build-examples:
     name: Build Examples
@@ -114,6 +142,11 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      
+      - name: Install HDF5 system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libhdf5-dev pkg-config
       
       - name: Cache cargo registry
         uses: actions/cache@v4
