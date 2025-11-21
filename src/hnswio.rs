@@ -27,7 +27,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 // synchro
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -780,6 +780,7 @@ impl HnswIo {
             ),
             nb_point: Arc::new(RwLock::new(nb_points_loaded)), // CAVEAT , we should increase , the whole thing is to be able to increment graph ?
             entry_point: Arc::new(RwLock::new(Some(entry_point))),
+            entry_point_init: Arc::new(Mutex::new(())),
         };
         //
         debug!("Exiting load_pointIndexation");
