@@ -1419,12 +1419,28 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                     PointWithOrder::<T>::new(&Arc::clone(&update.new_point), update.distance);
                 let l_n = n_to_add.point_ref.p_id.0 as usize;
 
+                // Ensure we don't exceed the layer bounds
+                if l_n >= target_neighbours.len() {
+                    warn!(
+                        "Skipping reverse update: target point layer {} exceeds neighbor list size {}",
+                        l_n,
+                        target_neighbours.len()
+                    );
+                    continue;
+                }
+
                 // Check if already present
                 let already = target_neighbours[l_n]
                     .iter()
                     .position(|old| old.point_ref.p_id == update.new_point.p_id);
 
                 if already.is_some() {
+                    trace!(
+                        "Skipping duplicate reverse update: point {:?} already in target {:?} at layer {}",
+                        update.new_point.p_id,
+                        target_id,
+                        l_n
+                    );
                     continue;
                 }
 
@@ -1441,7 +1457,13 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
 
                 if nbn_at_l > threshold_shrinking {
                     target_neighbours[l_n].sort_unstable();
-                    target_neighbours[l_n].pop();
+                    let removed = target_neighbours[l_n].pop();
+                    trace!(
+                        "Shrunk neighbor list at layer {} for target {:?}, removed point {:?}",
+                        l_n,
+                        target_id,
+                        removed.map(|p| p.point_ref.p_id)
+                    );
                 } else {
                     target_neighbours[l_n].sort_unstable();
                 }
