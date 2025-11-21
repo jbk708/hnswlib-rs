@@ -6,6 +6,10 @@ use hnsw_rs::prelude::*;
 use rand::Rng;
 use std::sync::Arc;
 
+fn init_logger() {
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 /// Helper function to find a point by origin_id
 fn find_point_by_origin_id<'b, T: Clone + Send + Sync>(
     point_indexation: &PointIndexation<'b, T>,
@@ -19,6 +23,7 @@ fn find_point_by_origin_id<'b, T: Clone + Send + Sync>(
 /// Test that batched reverse updates produce correct neighbor relationships
 #[test]
 fn test_batched_reverse_updates() {
+    init_logger();
     let nb_elem = 100;
     let max_nb_connection = 16;
     let nb_layer = 16;
@@ -85,6 +90,7 @@ fn test_batched_reverse_updates() {
 /// Test that batched updates work correctly with single insertions
 #[test]
 fn test_single_insertion_batched_updates() {
+    init_logger();
     let nb_elem = 50;
     let max_nb_connection = 16;
     let nb_layer = 16;

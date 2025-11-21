@@ -1278,6 +1278,161 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         trace!("Hnsw exiting insert new point {:?} ", new_point.p_id);
     } // end of insert
 
+    /// Internal insertion function that queues reverse updates but doesn't process them
+    /// Used by parallel_insert to defer batch processing until all insertions complete
+    fn insert_slice_internal(&self, data_with_id: (&[T], usize)) {
+        //
+        let (data, origin_id) = data_with_id;
+        let keep_pruned = self.keep_pruned;
+        // insert in indexation and get point_id adn generate a new entry_point if necessary
+        let (new_point, point_rank) = self
+            .layer_indexed_points
+            .generate_new_point(data, origin_id);
+        trace!("Hnsw insert generated new point {:?} ", new_point.p_id);
+        // now real work begins
+        // allocate a binary heap
+        let level = new_point.p_id.0;
+        let mut enter_point_copy = None;
+        let mut max_level_observed = 0;
+        // entry point has been set in
+        {
+            // I open a read lock on an option
+            if let Some(arc_point) = self.layer_indexed_points.entry_point.read().as_ref() {
+                enter_point_copy = Some(Arc::clone(arc_point));
+                if point_rank == 1 {
+                    debug!(
+                        "Hnsw  stored first point , direct return  {:?} ",
+                        new_point.p_id
+                    );
+                    return;
+                }
+                max_level_observed = enter_point_copy.as_ref().unwrap().p_id.0;
+            }
+        }
+        if enter_point_copy.is_none() {
+            self.layer_indexed_points.check_entry_point(&new_point);
+            return;
+        }
+        let mut dist_to_entry = self
+            .dist_f
+            .eval(data, enter_point_copy.as_ref().unwrap().data.get_v());
+        // we go from self.max_level_observed to level+1 included
+        for l in ((level + 1)..(max_level_observed + 1)).rev() {
+            // CAVEAT could bypass when layer empty, avoid  allocation..
+            let mut sorted_points = self.search_layer(
+                data,
+                Arc::clone(enter_point_copy.as_ref().unwrap()),
+                1,
+                l,
+                None,
+            );
+            trace!(
+                "in insert :search_layer layer {:?}, returned {:?} points ",
+                l,
+                sorted_points.len()
+            );
+            if sorted_points.len() > 1 {
+                panic!(
+                    "in insert : search_layer layer {:?}, returned {:?} points ",
+                    l,
+                    sorted_points.len()
+                );
+            }
+            // the heap conversion is useless beccause of the preceding test.
+            // sorted_points = from_positive_binaryheap_to_negative_binary_heap(&mut sorted_points);
+            //
+            if let Some(ep) = sorted_points.pop() {
+                // useful for projecting lower layer to upper layer. keep track of points encountered.
+                if new_point.neighbours.read()[l as usize].len()
+                    < self.get_max_nb_connection() as usize
+                {
+                    new_point.neighbours.write()[l as usize].push(Arc::clone(&ep));
+                }
+                // get the lowest distance point
+                let tmp_dist = self.dist_f.eval(data, ep.point_ref.data.get_v());
+                if tmp_dist < dist_to_entry {
+                    enter_point_copy = Some(Arc::clone(&ep.point_ref));
+                    dist_to_entry = tmp_dist;
+                }
+            } else {
+                // this layer is not yet filled
+                trace!("layer still empty  {} : got null list", l);
+            }
+        }
+        // now enter_point_id_copy contains id of nearest
+        // now loop down to 0
+        for l in (0..level + 1).rev() {
+            let ef = self.ef_construction;
+            // when l == level, we cannot get new_point in sorted_points as it is seen only from declared neighbours
+            let mut sorted_points = self.search_layer(
+                data,
+                Arc::clone(enter_point_copy.as_ref().unwrap()),
+                ef,
+                l,
+                None,
+            );
+            trace!(
+                "in insert :search_layer layer {:?}, returned {:?} points ",
+                l,
+                sorted_points.len()
+            );
+            sorted_points = from_positive_binaryheap_to_negative_binary_heap(&mut sorted_points);
+            if !sorted_points.is_empty() {
+                let nb_conn;
+                let extend_c;
+                if l == 0 {
+                    nb_conn = 2 * self.max_nb_connection;
+                    extend_c = self.extend_candidates;
+                } else {
+                    nb_conn = self.max_nb_connection;
+                    extend_c = false;
+                }
+                let mut neighbours = Vec::<Arc<PointWithOrder<T>>>::with_capacity(nb_conn);
+                self.select_neighbours(
+                    data,
+                    &mut sorted_points,
+                    nb_conn,
+                    extend_c,
+                    l,
+                    keep_pruned,
+                    &mut neighbours,
+                );
+                // sort neighbours
+                neighbours.sort_unstable();
+                // we must add bidirecti*onal from data i.e new_point_id to neighbours
+                new_point.neighbours.write()[l as usize].clone_from(&neighbours);
+                // this reverse neighbour update could be done here but we put it at end to gather all code
+                // requiring a mutex guard for multi threading.
+                // update ep for loop iteration. As we sorted neighbours the nearest
+                if !neighbours.is_empty() {
+                    enter_point_copy = Some(Arc::clone(&neighbours[0].point_ref));
+                }
+            }
+        } // for l
+          //
+          // new_point has been inserted at the beginning in table
+          // so that we can call reverse_update_neighborhoodwe consitently
+          // now reverse update of neighbours.
+        let reverse_update_start = std::time::Instant::now();
+        self.reverse_update_neighborhood_simple(Arc::clone(&new_point));
+        let reverse_update_duration = reverse_update_start.elapsed();
+        if reverse_update_duration.as_millis() > 100 {
+            warn!(
+                "reverse_update_neighborhood_simple took {:?} for point {:?}",
+                reverse_update_duration, new_point.p_id
+            );
+        }
+        //
+        // NOTE: We do NOT process batches here - that's done at the end of parallel_insert
+        //
+        self.layer_indexed_points.check_entry_point(&new_point);
+        //
+        trace!(
+            "Hnsw exiting insert_slice_internal new point {:?} ",
+            new_point.p_id
+        );
+    } // end of insert_slice_internal
+
     /// Insert in parallel a slice of Vec\<T\> each associated to its id.    
     /// It uses Rayon for threading so the number of insertions asked for must be large enough to be efficient.  
     /// Typically 1000 * the number of threads.  
@@ -1298,12 +1453,13 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             );
 
             // Insert remaining points in parallel
+            // Use insert_slice_internal to defer batch processing until the end
             if datas.len() > 1 {
                 let parallel_start = std::time::Instant::now();
                 let completed = Arc::new(AtomicUsize::new(0));
                 let completed_clone = Arc::clone(&completed);
                 datas[1..].par_iter().for_each(|&(item, v)| {
-                    self.insert((item.as_slice(), v));
+                    self.insert_slice_internal((item.as_slice(), v));
                     let count = completed_clone.fetch_add(1, AtomicOrdering::Relaxed) + 1;
                     if count.is_multiple_of(100) {
                         info!(
@@ -1419,6 +1575,14 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                     PointWithOrder::<T>::new(&Arc::clone(&update.new_point), update.distance);
                 let l_n = n_to_add.point_ref.p_id.0 as usize;
 
+                debug!(
+                    "Processing reverse update: adding point {:?} (layer {}) to target {:?} at layer {}",
+                    update.new_point.p_id,
+                    l_n,
+                    target_id,
+                    l_n
+                );
+
                 // Ensure we don't exceed the layer bounds
                 if l_n >= target_neighbours.len() {
                     warn!(
@@ -1435,7 +1599,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                     .position(|old| old.point_ref.p_id == update.new_point.p_id);
 
                 if already.is_some() {
-                    trace!(
+                    debug!(
                         "Skipping duplicate reverse update: point {:?} already in target {:?} at layer {}",
                         update.new_point.p_id,
                         target_id,
@@ -1448,6 +1612,14 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 target_neighbours[l_n].push(Arc::new(n_to_add));
                 let nbn_at_l = target_neighbours[l_n].len();
 
+                debug!(
+                    "Added reverse neighbor: point {:?} to target {:?} at layer {}, now {} neighbors",
+                    update.new_point.p_id,
+                    target_id,
+                    l_n,
+                    nbn_at_l
+                );
+
                 // Apply shrinking if necessary
                 let threshold_shrinking = if l_n > 0 {
                     self.max_nb_connection
@@ -1458,11 +1630,12 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 if nbn_at_l > threshold_shrinking {
                     target_neighbours[l_n].sort_unstable();
                     let removed = target_neighbours[l_n].pop();
-                    trace!(
-                        "Shrunk neighbor list at layer {} for target {:?}, removed point {:?}",
+                    warn!(
+                        "Shrunk neighbor list at layer {} for target {:?}, removed point {:?} (was adding {:?})",
                         l_n,
                         target_id,
-                        removed.map(|p| p.point_ref.p_id)
+                        removed.map(|p| p.point_ref.p_id),
+                        update.new_point.p_id
                     );
                 } else {
                     target_neighbours[l_n].sort_unstable();
