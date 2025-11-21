@@ -1020,19 +1020,19 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                         );
                         candidate_points
                             .push(Arc::new(PointWithOrder::new(&e.point_ref, -e_dist_to_p)));
-                        if filter.is_none() {
-                            return_points.push(Arc::clone(&e_prime));
-                        } else {
+                        if let Some(filter_ref) = filter.as_ref() {
                             let id: &usize = &e_prime.point_ref.get_origin_id();
-                            if filter.as_ref().unwrap().hnsw_filter(id) {
+                            if filter_ref.hnsw_filter(id) {
                                 if return_points.len() == 1 {
                                     let only_id = return_points.peek().unwrap().point_ref.origin_id;
-                                    if !filter.as_ref().unwrap().hnsw_filter(&only_id) {
+                                    if !filter_ref.hnsw_filter(&only_id) {
                                         return_points.clear()
                                     }
                                 }
                                 return_points.push(Arc::clone(&e_prime))
                             }
+                        } else {
+                            return_points.push(Arc::clone(&e_prime));
                         }
                         if return_points.len() > ef {
                             return_points.pop();

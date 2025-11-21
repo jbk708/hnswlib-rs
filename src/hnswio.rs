@@ -493,11 +493,11 @@ impl HnswIo {
         // Do we use mmap at reload
         if self.options.use_mmap().0 {
             let datamap_res = DataMap::from_hnswdump::<T>(self.dir.as_path(), &self.basename);
-            if datamap_res.is_err() {
-                error!("load_hnsw could not initialize mmap")
-            } else {
+            if let Ok(datamap) = datamap_res {
                 info!("reload using mmap");
-                self.datamap = Some(datamap_res.unwrap());
+                self.datamap = Some(datamap);
+            } else {
+                error!("load_hnsw could not initialize mmap")
             }
         }
         // reloader can use datamap
@@ -731,7 +731,7 @@ impl HnswIo {
                 point.neighbours.write()[l].sort_unstable();
             } // end of for l
             nbp += 1;
-            if nbp % 500_000 == 0 {
+            if nbp.is_multiple_of(500_000) {
                 debug!("reloading nb_points neighbourhood completed : {}", nbp);
             }
         } // end loop in neighbourhood_map
