@@ -5,6 +5,7 @@
 use ndarray::Array2;
 
 use ::hdf5::*;
+use anndists::dist::utils::l2_normalize;
 use log::debug;
 
 // datasets
@@ -205,10 +206,10 @@ impl AnnBenchmarkData {
     #[allow(unused)]
     pub fn do_l2_normalization(&mut self) {
         for i in 0..self.test_data.len() {
-            anndists::dist::l2_normalize(&mut self.test_data[i]);
+            l2_normalize(&mut self.test_data[i]);
         }
         for i in 0..self.train_data.len() {
-            anndists::dist::l2_normalize(&mut self.train_data[i].0);
+            l2_normalize(&mut self.train_data[i].0);
         }
     } // end of do_l2_normalization
 } // end of impl block
