@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 
@@ -23,7 +24,7 @@ use std::collections::binary_heap::BinaryHeap;
 use std::collections::HashSet;
 
 use log::trace;
-use log::{debug, info};
+use log::{debug, info, warn};
 
 pub use crate::filter::FilterT;
 use anndists::dist::distances::Distance;
@@ -530,8 +531,23 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
 
     /// check if entry_point is modified
     fn check_entry_point(&self, new_point: &Arc<Point<'b, T>>) {
+        let start = std::time::Instant::now();
         // Serialize entry point initialization to prevent race conditions
         let _guard = self.entry_point_init.lock();
+        let init_lock_duration = start.elapsed();
+
+        // Warn if mutex acquisition took too long
+        if init_lock_duration.as_secs() > 1 {
+            warn!(
+                "Acquiring entry_point_init mutex took {:?} (this may indicate contention)",
+                init_lock_duration
+            );
+        } else if init_lock_duration.as_millis() > 100 {
+            debug!(
+                "Entry point init mutex acquisition took {:?}",
+                init_lock_duration
+            );
+        }
 
         // Double-check pattern: check if entry point already exists
         {
@@ -546,8 +562,23 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
         }
 
         // Acquire write lock to update entry point
+        let write_lock_start = std::time::Instant::now();
         trace!("trying to get a lock on entry point");
         let mut entry_point_ref = self.entry_point.write();
+        let write_lock_duration = write_lock_start.elapsed();
+
+        // Warn if write lock acquisition took too long
+        if write_lock_duration.as_secs() > 1 {
+            warn!(
+                "Acquiring entry_point write lock took {:?} (this may indicate contention)",
+                write_lock_duration
+            );
+        } else if write_lock_duration.as_millis() > 100 {
+            debug!(
+                "Entry point write lock acquisition took {:?}",
+                write_lock_duration
+            );
+        }
         match entry_point_ref.as_ref() {
             Some(arc_point) => {
                 if new_point.p_id.0 > arc_point.p_id.0 {
@@ -1222,22 +1253,51 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     /// Many consecutive parallel_insert can be done, so the size of vector inserted in one insertion can be optimized.
     /// The first point is inserted sequentially to establish the entry point before parallel insertion begins.
     pub fn parallel_insert(&self, datas: &[(&Vec<T>, usize)]) {
-        debug!("entering parallel_insert");
+        debug!("entering parallel_insert with {} points", datas.len());
+        let start = std::time::Instant::now();
 
         // Insert first point sequentially to establish entry point and avoid race conditions
         if !datas.is_empty() {
+            let first_point_start = std::time::Instant::now();
             self.insert((datas[0].0.as_slice(), datas[0].1));
-            debug!("First point inserted sequentially, entry point established");
+            let first_point_duration = first_point_start.elapsed();
+            debug!(
+                "First point inserted sequentially in {:?}, entry point established",
+                first_point_duration
+            );
 
             // Insert remaining points in parallel
             if datas.len() > 1 {
-                datas[1..]
-                    .par_iter()
-                    .for_each(|&(item, v)| self.insert((item.as_slice(), v)));
+                let parallel_start = std::time::Instant::now();
+                let completed = Arc::new(AtomicUsize::new(0));
+                let completed_clone = Arc::clone(&completed);
+                datas[1..].par_iter().for_each(|&(item, v)| {
+                    self.insert((item.as_slice(), v));
+                    let count = completed_clone.fetch_add(1, AtomicOrdering::Relaxed) + 1;
+                    if count.is_multiple_of(100) {
+                        info!(
+                            "Inserted {} / {} points (elapsed: {:?})",
+                            count + 1,
+                            datas.len(),
+                            parallel_start.elapsed()
+                        );
+                    }
+                });
+                let parallel_duration = parallel_start.elapsed();
+                info!(
+                    "Completed parallel insertion of {} points in {:?}",
+                    datas.len() - 1,
+                    parallel_duration
+                );
             }
         }
 
-        debug!("exiting parallel_insert");
+        let elapsed = start.elapsed();
+        debug!(
+            "exiting parallel_insert, completed in {:?} ({:.2}s)",
+            elapsed,
+            elapsed.as_secs_f64()
+        );
     } // end of parallel_insert
 
     /// Insert in parallel slices of \[T\] each associated to its id.    
