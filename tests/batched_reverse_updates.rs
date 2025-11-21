@@ -59,8 +59,11 @@ fn test_batched_reverse_updates() {
                     let neighbor_id = neighbor.d_id;
 
                     // Get the neighbor point
-                    if let Some(neighbor_point) = find_point_by_origin_id(layer_indexed_points, neighbor_id) {
-                        let neighbor_neighbors: Vec<Vec<Neighbour>> = neighbor_point.get_neighborhood_id();
+                    if let Some(neighbor_point) =
+                        find_point_by_origin_id(layer_indexed_points, neighbor_id)
+                    {
+                        let neighbor_neighbors: Vec<Vec<Neighbour>> =
+                            neighbor_point.get_neighborhood_id();
 
                         // Check if the original point is in the neighbor's neighbor list at this layer
                         let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
@@ -114,8 +117,11 @@ fn test_single_insertion_batched_updates() {
                 for neighbor in layer_neighbors {
                     let neighbor_id = neighbor.d_id;
 
-                    if let Some(neighbor_point) = find_point_by_origin_id(layer_indexed_points, neighbor_id) {
-                        let neighbor_neighbors: Vec<Vec<Neighbour>> = neighbor_point.get_neighborhood_id();
+                    if let Some(neighbor_point) =
+                        find_point_by_origin_id(layer_indexed_points, neighbor_id)
+                    {
+                        let neighbor_neighbors: Vec<Vec<Neighbour>> =
+                            neighbor_point.get_neighborhood_id();
 
                         let found = neighbor_neighbors[layer].iter().any(|n| n.d_id == i);
 
@@ -146,8 +152,7 @@ fn test_batch_update_performance() {
     let mut times = Vec::new();
 
     for &nb_elem in &sizes {
-        let hnsw =
-            Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
+        let hnsw = Hnsw::<f32, DistL2>::new(max_nb_connection, nb_elem, nb_layer, ef_c, DistL2 {});
 
         // Generate random data
         let mut data: Vec<(Vec<f32>, usize)> = Vec::new();
