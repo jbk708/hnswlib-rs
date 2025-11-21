@@ -400,6 +400,8 @@ pub struct PointIndexation<'b, T: Clone + Send + Sync> {
     pub(crate) nb_point: Arc<RwLock<usize>>,
     /// curent enter_point: an Arc RwLock on a possible Arc Point
     pub(crate) entry_point: Arc<RwLock<Option<Arc<Point<'b, T>>>>>,
+    /// Mutex to serialize entry point initialization and prevent race conditions
+    pub(crate) entry_point_init: Arc<Mutex<()>>,
 }
 
 // A point indexation may contain circular references. To deallocate these after a point indexation goes out of scope,
@@ -462,6 +464,7 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
             layer_g,
             nb_point: Arc::new(RwLock::new(0)),
             entry_point: Arc::new(RwLock::new(None)),
+            entry_point_init: Arc::new(Mutex::new(())),
         }
     } // end of new
 
@@ -527,9 +530,22 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
 
     /// check if entry_point is modified
     fn check_entry_point(&self, new_point: &Arc<Point<'b, T>>) {
-        //
-        // take directly a write lock so that we are sure nobody can change anything between read and write
-        // of entry_point_id
+        // Serialize entry point initialization to prevent race conditions
+        let _guard = self.entry_point_init.lock();
+
+        // Double-check pattern: check if entry point already exists
+        {
+            let entry_point_ref = self.entry_point.read();
+            if let Some(existing) = entry_point_ref.as_ref() {
+                // Entry point already exists, check if we should update it
+                if new_point.p_id.0 <= existing.p_id.0 {
+                    trace!("Entry point already set at higher or equal level, skipping update");
+                    return; // No need to update
+                }
+            }
+        }
+
+        // Acquire write lock to update entry point
         trace!("trying to get a lock on entry point");
         let mut entry_point_ref = self.entry_point.write();
         match entry_point_ref.as_ref() {
