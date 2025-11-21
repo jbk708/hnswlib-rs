@@ -1240,7 +1240,15 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
           // new_point has been inserted at the beginning in table
           // so that we can call reverse_update_neighborhoodwe consitently
           // now reverse update of neighbours.
+        let reverse_update_start = std::time::Instant::now();
         self.reverse_update_neighborhood_simple(Arc::clone(&new_point));
+        let reverse_update_duration = reverse_update_start.elapsed();
+        if reverse_update_duration.as_millis() > 100 {
+            warn!(
+                "reverse_update_neighborhood_simple took {:?} for point {:?}",
+                reverse_update_duration, new_point.p_id
+            );
+        }
         //
         self.layer_indexed_points.check_entry_point(&new_point);
         //
@@ -1309,6 +1317,8 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     } // end of parallel_insert
 
     /// insert new_point in neighbourhood info of point
+    /// IMPORTANT: To prevent deadlocks, we must acquire locks in a consistent order.
+    /// We sort neighbors by PointId before acquiring their locks.
     fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<T>>) {
         //  println!("reverse update neighbourhood for  new point {:?} ", new_point.p_id);
         trace!(
@@ -1317,43 +1327,71 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         );
         let level = new_point.p_id.0;
         for l in (0..level + 1).rev() {
-            for q in &new_point.neighbours.read()[l as usize] {
-                if new_point.p_id != q.point_ref.p_id {
-                    // as new point is in global table, do not loop and deadlock!!
-                    let q_point = &q.point_ref;
-                    let mut q_point_neighbours = q_point.neighbours.write();
-                    let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), q.dist_to_ref);
-                    // must be sure that we add a point at the correct level. See the comment to search_layer!
-                    // this ensures that reverse updating do not add problems.
-                    let l_n = n_to_add.point_ref.p_id.0 as usize;
-                    let already = q_point_neighbours[l_n]
-                        .iter()
-                        .position(|old| old.point_ref.p_id == new_point.p_id);
-                    if already.is_some() {
-                        // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
-                        // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
-                        //   new_point.debug_dump();
-                        //   panic!();
-                        continue;
+            let neighbours_read_start = std::time::Instant::now();
+            let neighbours = new_point.neighbours.read();
+            let neighbours_read_duration = neighbours_read_start.elapsed();
+            if neighbours_read_duration.as_millis() > 50 {
+                warn!(
+                    "Reading neighbours for point {:?} layer {} took {:?}",
+                    new_point.p_id, l, neighbours_read_duration
+                );
+            }
+
+            // Collect neighbors and sort by PointId to ensure consistent lock ordering
+            // This prevents deadlocks when multiple threads update neighborhoods simultaneously
+            let mut neighbors_to_update: Vec<_> = neighbours[l as usize]
+                .iter()
+                .filter(|q| new_point.p_id != q.point_ref.p_id)
+                .map(|q| (q.point_ref.p_id, Arc::clone(&q.point_ref), q.dist_to_ref))
+                .collect();
+            neighbors_to_update.sort_by_key(|(p_id, _, _)| *p_id);
+
+            drop(neighbours); // Release read lock before acquiring write locks
+
+            for (_, q_point, dist_to_ref) in neighbors_to_update {
+                // as new point is in global table, do not loop and deadlock!!
+                let write_lock_start = std::time::Instant::now();
+                let mut q_point_neighbours = q_point.neighbours.write();
+                let write_lock_duration = write_lock_start.elapsed();
+                if write_lock_duration.as_millis() > 50 {
+                    warn!(
+                        "Acquiring write lock on neighbours for point {:?} took {:?} (updating from point {:?})",
+                        q_point.p_id,
+                        write_lock_duration,
+                        new_point.p_id
+                    );
+                }
+                let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), dist_to_ref);
+                // must be sure that we add a point at the correct level. See the comment to search_layer!
+                // this ensures that reverse updating do not add problems.
+                let l_n = n_to_add.point_ref.p_id.0 as usize;
+                let already = q_point_neighbours[l_n]
+                    .iter()
+                    .position(|old| old.point_ref.p_id == new_point.p_id);
+                if already.is_some() {
+                    // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
+                    // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
+                    //   new_point.debug_dump();
+                    //   panic!();
+                    continue;
+                }
+                q_point_neighbours[l_n].push(Arc::new(n_to_add));
+                let nbn_at_l = q_point_neighbours[l_n].len();
+                //
+                // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
+                let threshold_shrinking = if l_n > 0 {
+                    self.max_nb_connection
+                } else {
+                    2 * self.max_nb_connection
+                };
+                let shrink = nbn_at_l > threshold_shrinking;
+                {
+                    // sort and shring if necessary
+                    q_point_neighbours[l_n].sort_unstable();
+                    if shrink {
+                        q_point_neighbours[l_n].pop();
                     }
-                    q_point_neighbours[l_n].push(Arc::new(n_to_add));
-                    let nbn_at_l = q_point_neighbours[l_n].len();
-                    //
-                    // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
-                    let threshold_shrinking = if l_n > 0 {
-                        self.max_nb_connection
-                    } else {
-                        2 * self.max_nb_connection
-                    };
-                    let shrink = nbn_at_l > threshold_shrinking;
-                    {
-                        // sort and shring if necessary
-                        q_point_neighbours[l_n].sort_unstable();
-                        if shrink {
-                            q_point_neighbours[l_n].pop();
-                        }
-                    }
-                } // end protection against point identity
+                }
             }
         }
         //   println!("     exitingreverse update neighbourhood for  new point {:?} ", new_point.p_id);
