@@ -91,6 +91,20 @@ impl PointIdWithOrder {
     }
 } // end of impl block
 
+/// Represents a pending reverse neighbor update
+#[derive(Debug, Clone)]
+pub(crate) struct ReverseUpdate<'b, T: Clone + Send + Sync> {
+    /// Target point whose neighbors need updating
+    target_point: Arc<Point<'b, T>>,
+    /// New point to add to target's neighbors
+    new_point: Arc<Point<'b, T>>,
+    /// Distance from new_point to target_point
+    distance: f32,
+    /// Layer at which this connection exists
+    #[allow(dead_code)]
+    layer: u8,
+}
+
 //=======================================================================================
 /// The struct giving an answer point to a search request.
 /// This structure is exported to other language API.
@@ -802,6 +816,9 @@ pub struct Hnsw<'b, T: Clone + Send + Sync + 'b, D: Distance<T>> {
     pub(crate) searching: bool,
     /// set to true if some data come from a mmap
     pub(crate) datamap_opt: bool,
+    /// Queue for batched reverse neighbor updates
+    /// Maps target point ID to list of updates for that point
+    pub(crate) reverse_update_queue: Arc<Mutex<HashMap<PointId, Vec<ReverseUpdate<'b, T>>>>>,
 } // end of Hnsw
 
 impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
@@ -845,6 +862,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             dist_f: f,
             searching: false,
             datamap_opt: false,
+            reverse_update_queue: Arc::new(Mutex::new(HashMap::new())),
         }
     } // end of new
 
@@ -1250,6 +1268,11 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             );
         }
         //
+        // For single insertions, process batches immediately
+        // This ensures graph consistency but may be slower
+        // TODO: Consider batching multiple single insertions
+        self.process_batched_reverse_updates();
+        //
         self.layer_indexed_points.check_entry_point(&new_point);
         //
         trace!("Hnsw exiting insert new point {:?} ", new_point.p_id);
@@ -1300,6 +1323,9 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
             }
         }
 
+        // Process all batched reverse updates
+        self.process_batched_reverse_updates();
+
         let elapsed = start.elapsed();
         debug!(
             "exiting parallel_insert, completed in {:?} ({:.2}s)",
@@ -1316,86 +1342,117 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         datas.par_iter().for_each(|&item| self.insert_slice(item));
     } // end of parallel_insert
 
-    /// insert new_point in neighbourhood info of point
-    /// IMPORTANT: To prevent deadlocks, we must acquire locks in a consistent order.
-    /// We sort neighbors by PointId before acquiring their locks.
-    fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<T>>) {
-        //  println!("reverse update neighbourhood for  new point {:?} ", new_point.p_id);
+    /// Queue reverse neighbor updates instead of applying them immediately
+    /// This eliminates lock contention during parallel insertion by batching updates
+    fn reverse_update_neighborhood_simple(&self, new_point: Arc<Point<'b, T>>) {
         trace!(
-            "reverse update neighbourhood for  new point {:?} ",
+            "queueing reverse update neighbourhood for new point {:?}",
             new_point.p_id
         );
         let level = new_point.p_id.0;
+
+        // Collect all neighbors that need reverse updates
         for l in (0..level + 1).rev() {
-            let neighbours_read_start = std::time::Instant::now();
             let neighbours = new_point.neighbours.read();
-            let neighbours_read_duration = neighbours_read_start.elapsed();
-            if neighbours_read_duration.as_millis() > 50 {
-                warn!(
-                    "Reading neighbours for point {:?} layer {} took {:?}",
-                    new_point.p_id, l, neighbours_read_duration
-                );
-            }
 
-            // Collect neighbors and sort by PointId to ensure consistent lock ordering
-            // This prevents deadlocks when multiple threads update neighborhoods simultaneously
-            let mut neighbors_to_update: Vec<_> = neighbours[l as usize]
-                .iter()
-                .filter(|q| new_point.p_id != q.point_ref.p_id)
-                .map(|q| (q.point_ref.p_id, Arc::clone(&q.point_ref), q.dist_to_ref))
-                .collect();
-            neighbors_to_update.sort_by_key(|(p_id, _, _)| *p_id);
-
-            drop(neighbours); // Release read lock before acquiring write locks
-
-            for (_, q_point, dist_to_ref) in neighbors_to_update {
-                // as new point is in global table, do not loop and deadlock!!
-                let write_lock_start = std::time::Instant::now();
-                let mut q_point_neighbours = q_point.neighbours.write();
-                let write_lock_duration = write_lock_start.elapsed();
-                if write_lock_duration.as_millis() > 50 {
-                    warn!(
-                        "Acquiring write lock on neighbours for point {:?} took {:?} (updating from point {:?})",
-                        q_point.p_id,
-                        write_lock_duration,
-                        new_point.p_id
-                    );
+            for q in &neighbours[l as usize] {
+                if new_point.p_id == q.point_ref.p_id {
+                    continue; // Skip self-references
                 }
-                let n_to_add = PointWithOrder::<T>::new(&Arc::clone(&new_point), dist_to_ref);
-                // must be sure that we add a point at the correct level. See the comment to search_layer!
-                // this ensures that reverse updating do not add problems.
+
+                // Queue the update instead of applying immediately
+                let update = ReverseUpdate {
+                    target_point: Arc::clone(&q.point_ref),
+                    new_point: Arc::clone(&new_point),
+                    distance: q.dist_to_ref,
+                    layer: l,
+                };
+
+                let mut queue = self.reverse_update_queue.lock();
+                queue
+                    .entry(q.point_ref.p_id)
+                    .or_insert_with(Vec::new)
+                    .push(update);
+            }
+        }
+    } // end of reverse_update_neighborhood_simple
+
+    /// Process all queued reverse neighbor updates in batches
+    /// Groups updates by target point and processes them efficiently
+    fn process_batched_reverse_updates(&self) {
+        debug!("Processing batched reverse updates");
+        let start = std::time::Instant::now();
+
+        // Extract all updates from queue
+        let mut update_map: HashMap<PointId, Vec<ReverseUpdate<'b, T>>> = {
+            let mut queue = self.reverse_update_queue.lock();
+            std::mem::take(&mut *queue)
+        };
+
+        if update_map.is_empty() {
+            debug!("No reverse updates to process");
+            return;
+        }
+
+        debug!(
+            "Processing {} target points with reverse updates",
+            update_map.len()
+        );
+
+        // Process updates for each target point
+        // Sort by PointId to ensure consistent lock ordering (prevent deadlocks)
+        let mut sorted_targets: Vec<_> = update_map.keys().cloned().collect();
+        sorted_targets.sort();
+
+        for target_id in sorted_targets {
+            let updates = update_map.remove(&target_id).unwrap();
+
+            // Acquire lock once for this target point
+            // Get target_point before consuming updates
+            let target_point = Arc::clone(&updates[0].target_point);
+            let mut target_neighbours = target_point.neighbours.write();
+
+            // Apply all updates for this target point
+            for update in updates {
+                let n_to_add =
+                    PointWithOrder::<T>::new(&Arc::clone(&update.new_point), update.distance);
                 let l_n = n_to_add.point_ref.p_id.0 as usize;
-                let already = q_point_neighbours[l_n]
+
+                // Check if already present
+                let already = target_neighbours[l_n]
                     .iter()
-                    .position(|old| old.point_ref.p_id == new_point.p_id);
+                    .position(|old| old.point_ref.p_id == update.new_point.p_id);
+
                 if already.is_some() {
-                    // debug!(" new_point.p_id {:?} already in neighbourhood of  q_point {:?} at index {:?}", new_point.p_id, q_point.p_id, already.unwrap());
-                    // q_point.debug_dump();  cannot be called as its neighbours are locked write by this method.
-                    //   new_point.debug_dump();
-                    //   panic!();
                     continue;
                 }
-                q_point_neighbours[l_n].push(Arc::new(n_to_add));
-                let nbn_at_l = q_point_neighbours[l_n].len();
-                //
-                // if l < level, update upward chaining, insert does a sort! t_q has a neighbour not yet in global table of points!
+
+                // Add neighbor
+                target_neighbours[l_n].push(Arc::new(n_to_add));
+                let nbn_at_l = target_neighbours[l_n].len();
+
+                // Apply shrinking if necessary
                 let threshold_shrinking = if l_n > 0 {
                     self.max_nb_connection
                 } else {
                     2 * self.max_nb_connection
                 };
-                let shrink = nbn_at_l > threshold_shrinking;
-                {
-                    // sort and shring if necessary
-                    q_point_neighbours[l_n].sort_unstable();
-                    if shrink {
-                        q_point_neighbours[l_n].pop();
-                    }
+
+                if nbn_at_l > threshold_shrinking {
+                    target_neighbours[l_n].sort_unstable();
+                    target_neighbours[l_n].pop();
+                } else {
+                    target_neighbours[l_n].sort_unstable();
                 }
             }
         }
-        //   println!("     exitingreverse update neighbourhood for  new point {:?} ", new_point.p_id);
-    } // end of reverse_update_neighborhood_simple
+
+        let elapsed = start.elapsed();
+        debug!(
+            "Completed processing batched reverse updates in {:?}",
+            elapsed
+        );
+    } // end of process_batched_reverse_updates
 
     pub fn get_point_indexation(&self) -> &PointIndexation<'b, T> {
         &self.layer_indexed_points

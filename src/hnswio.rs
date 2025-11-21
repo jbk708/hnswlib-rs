@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 
-use std::collections::HashMap;
+use hashbrown::HashMap;
 
 use rand::Rng;
 
@@ -518,6 +518,7 @@ impl HnswIo {
             dist_f: D::default(),
             searching: false,
             datamap_opt: true, // set datamap_opt to true
+            reverse_update_queue: Arc::new(Mutex::new(HashMap::new())),
         };
         //
         debug!("load_hnsw completed");
@@ -607,6 +608,7 @@ impl HnswIo {
             dist_f: f,
             searching: false,
             datamap_opt: false,
+            reverse_update_queue: Arc::new(Mutex::new(HashMap::new())),
         };
         //
         debug!("load_hnsw_with_dist completed");
