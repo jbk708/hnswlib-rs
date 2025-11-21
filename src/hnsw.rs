@@ -1220,11 +1220,23 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
     /// It uses Rayon for threading so the number of insertions asked for must be large enough to be efficient.  
     /// Typically 1000 * the number of threads.  
     /// Many consecutive parallel_insert can be done, so the size of vector inserted in one insertion can be optimized.
+    /// The first point is inserted sequentially to establish the entry point before parallel insertion begins.
     pub fn parallel_insert(&self, datas: &[(&Vec<T>, usize)]) {
         debug!("entering parallel_insert");
-        datas
-            .par_iter()
-            .for_each(|&(item, v)| self.insert((item.as_slice(), v)));
+
+        // Insert first point sequentially to establish entry point and avoid race conditions
+        if !datas.is_empty() {
+            self.insert((datas[0].0.as_slice(), datas[0].1));
+            debug!("First point inserted sequentially, entry point established");
+
+            // Insert remaining points in parallel
+            if datas.len() > 1 {
+                datas[1..]
+                    .par_iter()
+                    .for_each(|&(item, v)| self.insert((item.as_slice(), v)));
+            }
+        }
+
         debug!("exiting parallel_insert");
     } // end of parallel_insert
 
