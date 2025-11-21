@@ -616,7 +616,7 @@ pub unsafe extern "C" fn new_hnsw_f32(
             ptr::null::<HnswApif32>()
         }
     } // znd match
-    //
+      //
 } // end of new_hnsw_f32
 
 /// # Safety
@@ -735,7 +735,9 @@ pub unsafe extern "C" fn search_neighbours_f32(
     //
     trace!(
         "entering search_neighbours , vec len is {:?}, id : {:?} ef_search {:?}",
-        len, knbn, ef_search
+        len,
+        knbn,
+        ef_search
     );
     let data_v: Vec<f32>;
     let neighbours: Vec<Neighbour>;
@@ -761,7 +763,8 @@ pub unsafe extern "C" fn search_neighbours_f32(
     };
     trace!(
         "search_neighbours returning nb neighbours {:?} id ptr {:?} ",
-        nbgh_i, neighbours_ptr
+        nbgh_i,
+        neighbours_ptr
     );
     Box::into_raw(Box::new(answer))
 }

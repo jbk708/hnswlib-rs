@@ -12,15 +12,15 @@ use std::cmp::Ordering;
 
 use parking_lot::{Mutex, RwLock, RwLockReadGuard};
 use rayon::prelude::*;
-use std::sync::Arc;
 use std::sync::mpsc::channel;
+use std::sync::Arc;
 
 use std::any::type_name;
 
 use hashbrown::HashMap;
+use std::collections::binary_heap::BinaryHeap;
 #[allow(unused)]
 use std::collections::HashSet;
-use std::collections::binary_heap::BinaryHeap;
 
 use log::trace;
 use log::{debug, info};
@@ -510,7 +510,7 @@ impl<'b, T: Clone + Send + Sync> PointIndexation<'b, T> {
             trace!("definitive pushing of point {:?}", p_id);
             points_by_layer_ref[p_id.0 as usize].push(Arc::clone(&new_point));
         } // close write lock on points_by_layer
-        //
+          //
         let nb_point;
         {
             let mut lock_nb_point = self.nb_point.write();
@@ -921,7 +921,9 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
         //
         trace!(
             "entering search_layer with entry_point_id {:?} layer : {:?} ef {:?} ",
-            entry_point.p_id, layer, ef
+            entry_point.p_id,
+            layer,
+            ef
         );
         //
         // here we allocate a binary_heap on values not on reference beccause we want to return
@@ -1039,7 +1041,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 }
             } // end of for on neighbours_c
         } // end of while in candidates
-        //
+          //
         trace!(
             "return from search_layer, nb points : {:?}",
             return_points.len()
@@ -1187,10 +1189,10 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 }
             }
         } // for l
-        //
-        // new_point has been inserted at the beginning in table
-        // so that we can call reverse_update_neighborhoodwe consitently
-        // now reverse update of neighbours.
+          //
+          // new_point has been inserted at the beginning in table
+          // so that we can call reverse_update_neighborhoodwe consitently
+          // now reverse update of neighbours.
         self.reverse_update_neighborhood_simple(Arc::clone(&new_point));
         //
         self.layer_indexed_points.check_entry_point(&new_point);
@@ -1341,7 +1343,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 candidates.push(Arc::new(PointWithOrder::new(p_point, -dist_topoint)));
             }
         } // end if extend_candidates
-        //
+          //
         let mut discarded_points = BinaryHeap::<Arc<PointWithOrder<T>>>::new();
         while !candidates.is_empty() && neighbours_vec.len() < nb_neighbours_asked {
             // compare distances of e to data. we do not need to recompute dists!
@@ -1508,7 +1510,7 @@ impl<'b, T: Clone + Send + Sync, D: Distance<T> + Send + Sync> Hnsw<'b, T, D> {
                 pivot = Arc::clone(new_pivot.as_ref().unwrap());
             }
         } // end on for on layers
-        // ef must be greater than knbn. Possibly it should be between knbn and self.max_nb_connection
+          // ef must be greater than knbn. Possibly it should be between knbn and self.max_nb_connection
         let ef = ef_arg.max(knbn);
         log::debug!("pivot changed , current pivot {:?}", pivot.get_point_id());
         // search lowest non empty layer (in case of search with incomplete lower layer at beginning of hnsw filling)

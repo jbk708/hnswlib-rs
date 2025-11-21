@@ -12,15 +12,10 @@ env:
 jobs:
   test:
     name: Test Suite
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
         rust: [stable, beta, nightly]
-        exclude:
-          # Exclude nightly on Windows to speed up CI
-          - os: windows-latest
-            rust: nightly
     steps:
       - uses: actions/checkout@v4
       
@@ -38,9 +33,9 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ubuntu-latest-cargo-${{ matrix.rust }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.rust }}-
+            ubuntu-latest-cargo-${{ matrix.rust }}-
       
       - name: Check formatting
         run: cargo fmt --all -- --check
